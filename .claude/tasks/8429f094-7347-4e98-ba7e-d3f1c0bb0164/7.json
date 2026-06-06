@@ -1,0 +1,9 @@
+{
+  "id": "7",
+  "subject": "Verify files and package for delivery",
+  "description": "Zip the project, do a final review of imports and logic consistency",
+  "activeForm": "Packaging and verifying",
+  "status": "completed",
+  "blocks": [],
+  "blockedBy": []
+}

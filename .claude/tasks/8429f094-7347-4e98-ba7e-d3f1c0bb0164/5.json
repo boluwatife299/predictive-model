@@ -1,0 +1,9 @@
+{
+  "id": "5",
+  "subject": "Write visualization and validation modules",
+  "description": "Implement charts.py (Plotly) and validation/ledger.py (performance report + lessons learned)",
+  "activeForm": "Building viz and validation",
+  "status": "completed",
+  "blocks": [],
+  "blockedBy": []
+}

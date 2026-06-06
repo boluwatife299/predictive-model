@@ -1,0 +1,9 @@
+{
+  "id": "4",
+  "subject": "Write Model Zoo (GBM + Monte Carlo)",
+  "description": "Implement abstract base model, GBM single-path, and Monte Carlo multi-path models",
+  "activeForm": "Building Model Zoo",
+  "status": "completed",
+  "blocks": [],
+  "blockedBy": []
+}

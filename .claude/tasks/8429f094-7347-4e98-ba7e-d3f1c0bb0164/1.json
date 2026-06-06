@@ -1,0 +1,9 @@
+{
+  "id": "1",
+  "subject": "Scaffold project folder structure",
+  "description": "Create all directories and __init__.py files for the Forecast Workbench project",
+  "activeForm": "Scaffolding project structure",
+  "status": "completed",
+  "blocks": [],
+  "blockedBy": []
+}

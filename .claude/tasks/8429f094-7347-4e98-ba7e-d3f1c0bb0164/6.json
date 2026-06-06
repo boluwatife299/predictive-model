@@ -1,0 +1,9 @@
+{
+  "id": "6",
+  "subject": "Write main Streamlit app (app.py)",
+  "description": "Wire everything together into the Streamlit UI with sidebar controls, chart output, and validation panel",
+  "activeForm": "Building Streamlit UI",
+  "status": "completed",
+  "blocks": [],
+  "blockedBy": []
+}

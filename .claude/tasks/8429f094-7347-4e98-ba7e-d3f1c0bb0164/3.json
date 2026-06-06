@@ -1,0 +1,9 @@
+{
+  "id": "3",
+  "subject": "Write data layer (fetcher + preprocessor)",
+  "description": "Implement data/fetcher.py (yfinance + ccxt) and data/preprocessor.py (cleaning, log returns, volatility)",
+  "activeForm": "Building data layer",
+  "status": "completed",
+  "blocks": [],
+  "blockedBy": []
+}

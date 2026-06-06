@@ -1,0 +1,9 @@
+{
+  "id": "2",
+  "subject": "Write config and requirements files",
+  "description": "Create requirements.txt and config/settings.py",
+  "activeForm": "Writing config",
+  "status": "completed",
+  "blocks": [],
+  "blockedBy": []
+}
