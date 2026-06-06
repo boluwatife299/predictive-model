@@ -14,8 +14,7 @@ arch>=6.3.0
 scikit-learn>=1.5.0
 xgboost>=2.0.0
 
-# Prophet (requires pystan / cmdstanpy — install separately if needed)
-prophet>=1.1.5
-
-# Deep learning (LSTM)
-tensorflow-cpu>=2.15.0
+# Prophet and LSTM are optional — install locally if you want them:
+#   pip install prophet tensorflow-cpu
+# They are excluded here because they exceed Streamlit Cloud free-tier
+# build limits (cmdstanpy compilation + 1 GB RAM cap).

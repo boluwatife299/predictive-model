@@ -19,7 +19,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from config.settings import APP_TITLE, ASSET_CLASSES, MODEL_ZOO, SINGLE_PATH_MODELS, HEAVY_MODELS
 from data.fetcher import DataFetcher
 from data.preprocessor import Preprocessor
-from models import REGISTRY
+from models import REGISTRY, UNAVAILABLE
 from validation.ledger import ValidationLedger
 from validation.tracker import enrich_with_actuals, load_runs, log_run
 from visualization.charts import (
@@ -92,8 +92,20 @@ with st.sidebar:
 
     st.divider()
 
-    # Model selection
-    model_label = st.selectbox("Model", list(MODEL_ZOO.keys()))
+    # Model selection — exclude models whose deps aren't installed
+    available_model_labels = [
+        label for label, key in MODEL_ZOO.items()
+        if key not in UNAVAILABLE
+    ]
+    if UNAVAILABLE:
+        unavailable_names = ", ".join(
+            label for label, key in MODEL_ZOO.items() if key in UNAVAILABLE
+        )
+        st.caption(
+            f"ℹ️ Not available in this environment (heavy deps): {unavailable_names}. "
+            "Install locally with `pip install prophet tensorflow-cpu`."
+        )
+    model_label = st.selectbox("Model", available_model_labels)
     model_key = MODEL_ZOO[model_label]
     ModelClass = REGISTRY[model_key]
 
