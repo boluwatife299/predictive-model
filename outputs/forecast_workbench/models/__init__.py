@@ -11,6 +11,7 @@ from models.xgboost_model     import XGBoostModel
 
 # Optional heavy models — gracefully excluded if deps aren't installed
 try:
+    import prophet as _prophet_lib  # noqa: F401
     from models.prophet_model import ProphetModel
     _PROPHET_OK = True
 except Exception:
@@ -18,6 +19,7 @@ except Exception:
     _PROPHET_OK = False
 
 try:
+    import tensorflow as _tf_lib  # noqa: F401
     from models.lstm_model import LSTMModel
     _LSTM_OK = True
 except Exception:
