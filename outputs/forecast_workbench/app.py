@@ -11,16 +11,28 @@ import time
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import streamlit as st
 
 # Make sure local packages are importable when launched from the project root
 sys.path.insert(0, str(Path(__file__).parent))
 
-from config.settings import APP_TITLE, ASSET_CLASSES, MODEL_ZOO, SINGLE_PATH_MODELS, HEAVY_MODELS
+from analysis.fundamentals import get_fundamentals
+from analysis.model_docs import MODEL_DOCS
+from analysis.signals import compute_signals
+from config.settings import (
+    APP_TITLE,
+    ASSET_CLASSES,
+    COMMODITY_CATALOG,
+    HEAVY_MODELS,
+    MODEL_ZOO,
+    SINGLE_PATH_MODELS,
+)
 from data.fetcher import DataFetcher
 from data.preprocessor import Preprocessor
 from models import REGISTRY, UNAVAILABLE
 from validation.ledger import ValidationLedger
+from validation.store import is_cloud_persistent
 from validation.tracker import enrich_with_actuals, load_runs, log_run
 from visualization.charts import (
     plot_gbm,
@@ -71,13 +83,29 @@ with st.sidebar:
 
     # Asset class & ticker
     asset_class = st.selectbox("Asset Class", list(ASSET_CLASSES.keys()))
-    default_tickers = ASSET_CLASSES[asset_class]
-    ticker_input = st.text_input(
-        "Ticker / Symbol",
-        value=default_tickers[0],
-        help="Equity/ETF: any Yahoo Finance ticker. Crypto: e.g. BTC-USD or BTC/USDT",
-    )
-    ticker = ticker_input.strip().upper()
+
+    if asset_class == "Commodities":
+        # Commodities get a curated dropdown (no free-text) — only this class.
+        commodity_options: list[tuple[str, str]] = []   # (display_label, symbol)
+        for group, items in COMMODITY_CATALOG.items():
+            for name, sym in items:
+                commodity_options.append((f"{group} · {name}  ({sym})", sym))
+
+        labels = [lbl for lbl, _ in commodity_options]
+        chosen_label = st.selectbox(
+            "Commodity",
+            labels,
+            help="Curated precious-metals and agriculture futures (Yahoo front-month).",
+        )
+        ticker = dict(commodity_options)[chosen_label]
+    else:
+        default_tickers = ASSET_CLASSES[asset_class]
+        ticker_input = st.text_input(
+            "Ticker / Symbol",
+            value=default_tickers[0],
+            help="Equity/ETF: any Yahoo Finance ticker. Crypto: e.g. BTC-USD or BTC/USDT",
+        )
+        ticker = ticker_input.strip().upper()
 
     # Data window
     period_options = {"6 months": "6mo", "1 year": "1y", "2 years": "2y", "3 years": "3y"}
@@ -232,8 +260,10 @@ if data_ok:
                 st.session_state.run_error = None
                 try:
                     log_run(ticker=ticker, asset_class=asset_class, result=result_forward)
-                except Exception:
-                    pass
+                    st.session_state.log_error = None
+                except Exception as log_exc:
+                    # Don't fail the forecast, but don't silently lose the run either.
+                    st.session_state.log_error = str(log_exc)
             except Exception as exc:
                 st.session_state.run_error = str(exc)
 
@@ -278,9 +308,115 @@ if data_ok:
                 with st.expander("Risk Metrics"):
                     st.json(result_forward.metadata)
 
+            st.divider()
+
+            # ── Why this forecast — model explainer ────────────────────────
+            doc = MODEL_DOCS.get(model_key)
+            if doc:
+                st.subheader(f"🧠 Understanding the model — {doc['title']}")
+                st.markdown(f"**What it does.** {doc['what']}")
+                with st.expander("How it's modelled (the maths)"):
+                    st.markdown(doc["how"])
+                st.markdown(f"**Why / when to use it.** {doc['why']}")
+
+            st.divider()
+
+            # ── Tailwinds / headwinds / behavioural read ───────────────────
+            st.subheader("🌬️ Tailwinds, headwinds & behavioural read")
+            signals = compute_signals(raw_df)
+            st.caption(f"Current regime: **{signals.regime}**")
+
+            cwind1, cwind2 = st.columns(2)
+            with cwind1:
+                st.markdown("**🟢 Tailwinds (supportive)**")
+                if signals.tailwinds:
+                    for t in signals.tailwinds:
+                        st.markdown(f"- {t}")
+                else:
+                    st.caption("None detected from current price action.")
+            with cwind2:
+                st.markdown("**🔴 Headwinds (adverse)**")
+                if signals.headwinds:
+                    for h in signals.headwinds:
+                        st.markdown(f"- {h}")
+                else:
+                    st.caption("None detected from current price action.")
+
+            with st.expander("Behavioural metrics"):
+                m = signals.metrics
+
+                def _pct(x):
+                    return "—" if x is None or (isinstance(x, float) and np.isnan(x)) else f"{x*100:.1f}%"
+
+                def _num(x):
+                    return "—" if x is None or (isinstance(x, float) and np.isnan(x)) else f"{x:,.2f}"
+
+                beh_rows = {
+                    "Last close": _num(m.get("last")),
+                    "1M / 3M / 6M return": f"{_pct(m.get('ret_1m'))} / {_pct(m.get('ret_3m'))} / {_pct(m.get('ret_6m'))}",
+                    "RSI (14)": _num(m.get("rsi14")),
+                    "Realised vol (30d / full)": f"{_pct(m.get('real_vol_30'))} / {_pct(m.get('real_vol_full'))}",
+                    "Drawdown from high": _pct(m.get("drawdown_from_high")),
+                    "Dist. to 52w high / low": f"{_pct(m.get('dist_52w_high'))} / {_pct(m.get('dist_52w_low'))}",
+                }
+                st.table(pd.DataFrame(beh_rows.items(), columns=["Metric", "Value"]))
+
+            # ── Daily news / trends (AI — Phase 5) ─────────────────────────
+            with st.expander("📰 Daily news & trends"):
+                st.caption(
+                    "AI-generated news and trend context will appear here once the "
+                    "AI layer is wired up (set `ANTHROPIC_API_KEY` in secrets)."
+                )
+
 # ── Validation tab ────────────────────────────────────────────────────────────
 
     with tab_validate:
+        # ── Fundamental analysis (instrument-level, shown regardless of run) ──
+        st.subheader(f"🏛️ Fundamental Analysis — {ticker}")
+
+        @st.cache_data(ttl=3600, show_spinner=False)
+        def _load_fundamentals(tk: str, ac: str):
+            return get_fundamentals(tk, ac)
+
+        with st.spinner("Loading fundamentals…"):
+            try:
+                fund = _load_fundamentals(ticker, asset_class)
+            except Exception as exc:
+                fund = None
+                st.caption(f"Fundamentals unavailable: {exc}")
+
+        if fund is not None:
+            if not fund.applicable:
+                st.info(fund.note)
+            else:
+                if fund.sector or fund.industry:
+                    st.caption(f"**{fund.name}** · {fund.sector} · {fund.industry}")
+                if fund.note:
+                    st.caption(fund.note)
+
+                group_items = list(fund.groups.items())
+                if group_items:
+                    fcols = st.columns(min(len(group_items), 2))
+                    for i, (group, kv) in enumerate(group_items):
+                        with fcols[i % len(fcols)]:
+                            st.markdown(f"**{group}**")
+                            st.table(
+                                pd.DataFrame(kv.items(), columns=["Metric", "Value"])
+                            )
+
+                if fund.analyst:
+                    st.markdown("**Analyst view**")
+                    st.table(
+                        pd.DataFrame(fund.analyst.items(), columns=["Metric", "Value"])
+                    )
+
+                if fund.summary:
+                    with st.expander("Business summary"):
+                        st.write(fund.summary)
+
+        st.divider()
+        st.subheader("🎯 Validation & Lessons")
+
         if result is None:
             st.info("Run a model first to see the validation report.")
         elif not prep.has_validation:
@@ -353,164 +489,12 @@ if data_ok:
                 )
 
                 with st.expander("Model Behaviour Explained"):
-                    _MODEL_EXPLANATIONS = {
-                        "gbm": """
-**Geometric Brownian Motion (GBM)**
-
-$$dS = \\mu S \\, dt + \\sigma S \\, dW_t$$
-
-- **μ** (drift): annualised expected return from historical log returns.
-- **σ** (vol): annualised std of log returns.
-- **dWₜ**: Wiener process — the random shock.
-
-**Strengths:** tractable, positive prices guaranteed, foundation of Black-Scholes.
-**Weaknesses:** constant μ and σ, no fat tails, no jumps, no mean reversion.
-""",
-                        "monte_carlo": """
-**Monte Carlo Simulation**
-
-Runs *N* independent GBM paths. At each step:
-
-$$S_i(t+\\Delta t) = S_i(t) \\cdot \\exp\\!\\left[\\left(\\mu - \\tfrac{\\sigma^2}{2}\\right)\\Delta t + \\sigma\\sqrt{\\Delta t}\\,Z\\right],\\quad Z \\sim \\mathcal{N}(0,1)$$
-
-- **P5 path** = downside scenario (VaR proxy).
-- **P95 path** = upside scenario.
-- **Fan width** = uncertainty; wider = higher σ.
-
-**Weaknesses:** same as GBM — constant vol, no jumps, no regime changes.
-""",
-                        "ou": """
-**Ornstein-Uhlenbeck (Mean Reversion)**
-
-$$dX = \\theta(\\mu - X)\\,dt + \\sigma\\,dW$$
-
-- **θ** (reversion speed): how fast price snaps back to equilibrium.
-- **μ** (long-run mean): the equilibrium price level.
-- **Half-life** = ln(2)/θ days — how long a shock takes to halve.
-
-**Best for:** VIX, interest rates, commodity spreads, pairs-trading spreads.
-**Weakness:** poor for trending assets; assumes prices always revert.
-""",
-                        "jump_diffusion": """
-**Merton Jump Diffusion**
-
-GBM + a compound Poisson jump process:
-
-$$dS = (\\mu - \\lambda\\bar{k})S\\,dt + \\sigma S\\,dW + S\\,dJ$$
-
-- **λ** (intensity): expected jumps per year.
-- **μⱼ, σⱼ**: mean and std of log-jump sizes.
-- **k̄** = E[e^Y − 1]: compensator keeping drift unbiased.
-
-**Best for:** crypto, single stocks around earnings, anything with fat tails.
-**Weakness:** still constant vol between jumps; jump timing is random, not event-driven.
-""",
-                        "heston": """
-**Heston Stochastic Volatility**
-
-$$dS = \\mu S\\,dt + \\sqrt{V}\\,S\\,dW_1$$
-$$dV = \\kappa(\\theta - V)\\,dt + \\xi\\sqrt{V}\\,dW_2,\\quad \\text{Corr}(dW_1,dW_2)=\\rho$$
-
-- **κ**: variance mean-reversion speed.
-- **θ**: long-run variance (√θ = long-run vol).
-- **ξ** (xi): vol-of-vol — how much variance fluctuates.
-- **ρ**: typically negative for equities (price falls → vol spikes).
-- **Feller condition:** 2κθ > ξ² for variance to stay non-negative.
-
-**Best for:** options pricing, assets where the vol smile matters.
-""",
-                        "arima": """
-**ARIMA(p, d, q)**
-
-Works on the log-price series after *d* differences:
-
-$$y_t = c + \\sum_{i=1}^p \\phi_i y_{t-i} + \\sum_{j=1}^q \\theta_j \\varepsilon_{t-j} + \\varepsilon_t$$
-
-- **p** AR lags: how many past values predict today.
-- **d** differences: 1 = model returns (standard for prices).
-- **q** MA lags: how many past forecast errors predict today.
-
-**Best for:** assets with autocorrelated returns or detectable patterns.
-**Weakness:** linear only, no volatility clustering, forecasts revert to mean quickly.
-""",
-                        "garch": """
-**GARCH(p, q)**
-
-Fixes GBM's biggest flaw — lets volatility cluster:
-
-$$r_t = \\sigma_t \\varepsilon_t, \\quad \\sigma_t^2 = \\omega + \\sum_{i=1}^p \\alpha_i r_{t-i}^2 + \\sum_{j=1}^q \\beta_j \\sigma_{t-j}^2$$
-
-- **α** (ARCH): weight on recent squared shock — how fast vol reacts.
-- **β** (GARCH): weight on past variance — how long vol persists.
-- **Persistence** = α + β. Close to 1 = long-memory vol.
-- **Half-life** of vol shock = log(0.5) / log(α + β) days.
-
-Price paths are simulated using time-varying σₜ from the GARCH forecast.
-""",
-                        "linear_regression": """
-**Linear Regression (Ridge OLS Baseline)**
-
-Features: lag₁…lag_k prices, rolling mean, rolling std, time index.
-
-$$\\hat{P}_{t+1} = \\beta_0 + \\beta_1 P_t + \\beta_2 P_{t-1} + \\ldots + \\beta_k \\bar{P} + \\varepsilon$$
-
-Recursive multi-step forecast: each prediction feeds the next as a new lag.
-
-**Use this as your benchmark.** If LSTM or XGBoost can't beat it, they're overfit.
-**Weakness:** linear only; accumulating error in recursive forecasting.
-""",
-                        "xgboost": """
-**XGBoost (Gradient Boosted Trees)**
-
-Builds an ensemble of decision trees, each correcting the previous one's residuals:
-
-$$\\hat{y} = \\sum_{k=1}^K f_k(x),\\quad f_k \\in \\mathcal{F}$$
-
-Features: lagged prices, rolling mean/std, log-returns.
-Recursive T-step forecast; each step uses prior predictions as new lags.
-
-- **n_estimators**: number of trees (more = richer model).
-- **max_depth**: tree complexity. Keep ≤ 5 to avoid overfitting.
-
-**Strengths:** handles non-linearity, interactions, and regime-like behavior.
-**Weakness:** not natively sequential; recursive errors compound.
-""",
-                        "prophet": """
-**Prophet (Meta / Facebook)**
-
-Additive decomposition:
-
-$$y(t) = \\text{trend}(t) + \\text{seasonality}(t) + \\text{holidays}(t) + \\varepsilon_t$$
-
-- **Trend**: piecewise linear with automatic changepoint detection.
-- **Seasonality**: Fourier series for weekly and yearly cycles.
-- **changepoint_prior_scale**: higher = more flexible trend.
-
-**Best for:** assets with strong seasonality (gold, commodities, BTC cycles).
-**Weakness:** designed for business metrics, not stochastic price processes.
-""",
-                        "lstm": """
-**LSTM Neural Network (Long Short-Term Memory)**
-
-A recurrent neural network designed to capture long-range dependencies:
-
-$$h_t = \\text{LSTM}(x_t, h_{t-1}, c_{t-1})$$
-
-Gates control what the network remembers vs forgets:
-- **Forget gate**: discard irrelevant history.
-- **Input gate**: add new information.
-- **Output gate**: produce the hidden state.
-
-Architecture here: Input(lookback, 1) → LSTM(units) → Dropout(0.1) → Dense(1).
-Prices are MinMax-normalised before training and inverse-transformed after.
-
-**Best for:** assets with complex non-linear temporal patterns.
-**Weakness:** needs significant data, slow to train, black-box.
-""",
-                    }
-                    explanation = _MODEL_EXPLANATIONS.get(model_key, "")
-                    if explanation:
-                        st.markdown(explanation)
+                    doc = MODEL_DOCS.get(model_key)
+                    if doc:
+                        st.markdown(f"### {doc['title']}")
+                        st.markdown(f"**What it does.** {doc['what']}")
+                        st.markdown(doc["how"])
+                        st.markdown(f"**Why / when to use it.** {doc['why']}")
 
 # ── Model History tab ─────────────────────────────────────────────────────────
 
@@ -521,6 +505,26 @@ Prices are MinMax-normalised before training and inverse-transformed after.
             "Once the forecast horizon has elapsed, the actual price is fetched "
             "and the error is calculated automatically."
         )
+
+        # Persistence status — make it obvious whether runs survive a redeploy.
+        if is_cloud_persistent():
+            st.success(
+                "🟢 Connected to managed Postgres — history persists across "
+                "restarts and redeploys."
+            )
+        else:
+            st.warning(
+                "🟡 Using local SQLite. History persists on this machine only — "
+                "a cloud deployment will **lose runs on every redeploy**. Set "
+                "`DATABASE_URL` (e.g. a Supabase connection string) in your "
+                "Streamlit secrets to persist history in the cloud."
+            )
+
+        if st.session_state.get("log_error"):
+            st.error(
+                f"⚠️ The last run could **not** be saved to history: "
+                f"{st.session_state.log_error}"
+            )
 
         runs_df = load_runs()
 
