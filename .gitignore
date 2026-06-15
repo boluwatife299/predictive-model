@@ -1,0 +1,9 @@
+
+# Local persistence — ephemeral, never commit (use DATABASE_URL/Postgres in cloud)
+outputs/forecast_workbench/validation/model_runs.db
+**/__pycache__/
+*.pyc
+.DS_Store
+
+# Streamlit secrets — never commit real credentials
+outputs/forecast_workbench/.streamlit/secrets.toml

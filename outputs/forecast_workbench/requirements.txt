@@ -6,6 +6,10 @@ yfinance>=0.2.40
 scipy>=1.13.0
 python-dotenv>=1.0.0
 
+# Persistence — history survives redeploys when DATABASE_URL points at Postgres
+SQLAlchemy>=2.0.0
+psycopg2-binary>=2.9.0
+
 # Statistical models
 statsmodels>=0.14.0
 arch>=6.3.0

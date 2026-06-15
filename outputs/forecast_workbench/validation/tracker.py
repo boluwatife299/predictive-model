@@ -1,45 +1,24 @@
 """
-Model Run Tracker — persists forecast runs to a local SQLite database.
+Model Run Tracker — persists forecast runs to a SQL database.
 
 Every time a model is run, the prediction is logged with a timestamp.
 On subsequent sessions you can load past runs and compare predictions
 against what actually happened (model monitoring / backtesting).
+
+The backend is resolved in ``store.py``: managed Postgres (Supabase) when
+``DATABASE_URL`` is configured, otherwise a local SQLite file. Use Postgres
+for any deployed instance — the local SQLite disk is wiped on redeploy.
 """
 from __future__ import annotations
 
 import json
-import sqlite3
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any
 
 import pandas as pd
+from sqlalchemy import insert, select
 
-# Database lives next to this file so it survives across sessions
-_DB_PATH = Path(__file__).parent / "model_runs.db"
-
-
-def _get_conn() -> sqlite3.Connection:
-    conn = sqlite3.connect(_DB_PATH)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS model_runs (
-            id              INTEGER PRIMARY KEY AUTOINCREMENT,
-            run_at          TEXT NOT NULL,
-            ticker          TEXT NOT NULL,
-            asset_class     TEXT NOT NULL,
-            model_name      TEXT NOT NULL,
-            horizon_days    INTEGER NOT NULL,
-            S0              REAL NOT NULL,
-            predicted_p50   REAL NOT NULL,
-            predicted_p5    REAL NOT NULL,
-            predicted_p95   REAL NOT NULL,
-            mu              REAL NOT NULL,
-            sigma           REAL NOT NULL,
-            params          TEXT NOT NULL
-        )
-    """)
-    conn.commit()
-    return conn
+from validation.store import get_engine, model_runs
 
 
 def log_run(
@@ -48,48 +27,43 @@ def log_run(
     result: Any,          # ModelResult
 ) -> int:
     """
-    Persist a model run to the database.
-    Returns the new row ID.
+    Persist a model run to the database. Returns the new row ID.
+
+    Raises on failure — the caller is responsible for deciding whether to
+    surface the error to the user (it must, otherwise runs silently vanish).
     """
-    conn = _get_conn()
-    cursor = conn.execute(
-        """
-        INSERT INTO model_runs
-            (run_at, ticker, asset_class, model_name, horizon_days,
-             S0, predicted_p50, predicted_p5, predicted_p95, mu, sigma, params)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            datetime.now(timezone.utc).isoformat(),
-            ticker,
-            asset_class,
-            result.model_name,
-            result.params.get("horizon_days", len(result.dates) - 1),
-            result.S0,
-            float(result.percentiles[50][-1]),
-            float(result.percentiles[5][-1]),
-            float(result.percentiles[95][-1]),
-            result.mu,
-            result.sigma,
-            json.dumps(result.params),
-        ),
+    engine = get_engine()
+    stmt = insert(model_runs).values(
+        run_at=datetime.now(timezone.utc),
+        ticker=ticker,
+        asset_class=asset_class,
+        model_name=result.model_name,
+        horizon_days=int(result.params.get("horizon_days", len(result.dates) - 1)),
+        s0=float(result.S0),
+        predicted_p50=float(result.percentiles[50][-1]),
+        predicted_p5=float(result.percentiles[5][-1]),
+        predicted_p95=float(result.percentiles[95][-1]),
+        mu=float(result.mu),
+        sigma=float(result.sigma),
+        params=json.dumps(result.params),
     )
-    conn.commit()
-    row_id = cursor.lastrowid
-    conn.close()
-    return row_id
+    with engine.begin() as conn:
+        cursor = conn.execute(stmt)
+        row_id = cursor.inserted_primary_key[0]
+    return int(row_id)
 
 
 def load_runs() -> pd.DataFrame:
     """Return all logged runs as a DataFrame, newest first."""
-    conn = _get_conn()
-    df = pd.read_sql_query(
-        "SELECT * FROM model_runs ORDER BY id DESC", conn
-    )
-    conn.close()
+    engine = get_engine()
+    stmt = select(model_runs).order_by(model_runs.c.id.desc())
+    with engine.connect() as conn:
+        df = pd.read_sql_query(stmt, conn)
     if df.empty:
         return df
-    df["run_at"] = pd.to_datetime(df["run_at"]).dt.tz_convert("UTC")
+    # Expose the column as "S0" for the UI, mirroring the old schema.
+    df = df.rename(columns={"s0": "S0"})
+    df["run_at"] = pd.to_datetime(df["run_at"], utc=True)
     return df
 
 
