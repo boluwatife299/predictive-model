@@ -32,7 +32,7 @@ from data.fetcher import DataFetcher
 from data.preprocessor import Preprocessor
 from models import REGISTRY, UNAVAILABLE
 from validation.ledger import ValidationLedger
-from validation.store import is_cloud_persistent
+from validation.store import get_status
 from validation.tracker import enrich_with_actuals, load_runs, log_run
 from visualization.charts import (
     plot_gbm,
@@ -545,18 +545,31 @@ if data_ok:
             "and the error is calculated automatically."
         )
 
-        # Persistence status — make it obvious whether runs survive a redeploy.
-        if is_cloud_persistent():
+        # Persistence status — make it obvious whether runs survive a redeploy,
+        # and *why* if they won't.
+        status = get_status()
+        if status["connected"]:
             st.success(
                 "🟢 Connected to managed Postgres — history persists across "
                 "restarts and redeploys."
             )
+        elif status["configured"]:
+            # A DATABASE_URL was found but the connection failed → show the reason.
+            st.error(
+                "🔴 `DATABASE_URL` is set but the database connection **failed**, "
+                "so the app fell back to local SQLite (runs will not persist in the "
+                f"cloud). Reason:\n\n```\n{status['error']}\n```\n\n"
+                "Common causes: wrong password, using the **direct** connection "
+                "(port 5432, IPv6-only) instead of the **Transaction pooler** "
+                "(port 6543, host `…pooler.supabase.com`), or an un-encoded special "
+                "character in the password."
+            )
         else:
             st.warning(
-                "🟡 Using local SQLite. History persists on this machine only — "
-                "a cloud deployment will **lose runs on every redeploy**. Set "
-                "`DATABASE_URL` (e.g. a Supabase connection string) in your "
-                "Streamlit secrets to persist history in the cloud."
+                "🟡 No `DATABASE_URL` detected — using local SQLite. History persists "
+                "on this machine only; a cloud deployment will **lose runs on every "
+                "redeploy**. Add `DATABASE_URL` (your Supabase pooler string) to your "
+                "Streamlit **Settings → Secrets** to persist history in the cloud."
             )
 
         if st.session_state.get("log_error"):
