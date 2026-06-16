@@ -404,13 +404,13 @@ if data_ok:
                                 headwinds=signals.headwinds,
                                 driver_categories=get_drivers(ticker, asset_class),
                             )
-                            st.session_state.ai_brief = (brief_key, brief)
+                            st.session_state.ai_brief_result = (brief_key, brief)
                             st.session_state.ai_brief_error = None
                         except Exception as exc:
-                            st.session_state.ai_brief = (brief_key, None)
+                            st.session_state.ai_brief_result = (brief_key, None)
                             st.session_state.ai_brief_error = str(exc)
 
-                cached_brief = st.session_state.get("ai_brief")
+                cached_brief = st.session_state.get("ai_brief_result")
                 if cached_brief and cached_brief[0] == brief_key:
                     if st.session_state.get("ai_brief_error"):
                         st.error(f"AI brief failed: {st.session_state.ai_brief_error}")
