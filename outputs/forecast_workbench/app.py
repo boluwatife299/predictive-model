@@ -21,6 +21,7 @@ from analysis import llm
 from analysis.drivers import get_drivers
 from analysis.fundamentals import get_fundamentals
 from analysis.model_docs import MODEL_DOCS
+from analysis.param_docs import DATA_USAGE, PARAM_DOCS
 from analysis.signals import compute_signals
 from config.settings import (
     APP_TITLE,
@@ -337,6 +338,127 @@ if data_ok:
                 with st.expander("How it's modelled (the maths)"):
                     st.markdown(doc["how"])
                 st.markdown(f"**Why / when to use it.** {doc['why']}")
+
+            st.divider()
+
+            # ── Parameters & scenario analysis (study aid) ─────────────────
+            st.subheader("📐 Parameters & scenario analysis")
+            st.markdown(DATA_USAGE)
+            st.caption("Each parameter below shows your current value and what changing it does.")
+            schema_now = ModelClass.param_schema()
+            for pname in schema_now:
+                pdoc = PARAM_DOCS.get(pname)
+                pretty = pname.replace("_", " ").title()
+                current = user_params.get(pname)
+                with st.expander(f"{pretty}  —  current value: {current}"):
+                    if pdoc:
+                        st.markdown(f"**What it is.** {pdoc['what']}")
+                        st.markdown(f"**Turn it up ▲** {pdoc['increase']}")
+                        st.markdown(f"**Turn it down ▼** {pdoc['decrease']}")
+                        st.markdown(f"**Scenario.** {pdoc['scenario']}")
+                    else:
+                        # Fall back to the slider tooltip from the schema.
+                        st.markdown(schema_now[pname][4])
+
+            st.divider()
+
+            # ── Compare models ─────────────────────────────────────────────
+            st.subheader("⚖️ Compare models")
+            st.caption(
+                "Run several models on the same data (with their default "
+                "parameters) and compare today's forward forecast side by side. "
+                "Big disagreement between models = high genuine uncertainty."
+            )
+            compare_labels = [lbl for lbl, k in MODEL_ZOO.items() if k not in UNAVAILABLE]
+            default_compare = [
+                lbl for lbl, k in MODEL_ZOO.items()
+                if k in {"gbm", "monte_carlo", "ou", "jump_diffusion", "garch"}
+                and k not in UNAVAILABLE
+            ]
+            chosen_compare = st.multiselect(
+                "Models to compare",
+                compare_labels,
+                default=default_compare,
+                help="Heavy ML models (XGBoost/LSTM/Prophet) are slower — add them only if you want to wait.",
+            )
+            cmp_key = (ticker, asset_class,
+                       tuple(sorted(MODEL_ZOO[l] for l in chosen_compare)))
+            if st.button("⚖️ Run comparison", key="run_compare") and chosen_compare:
+                rows = []
+                prog = st.progress(0.0)
+                for i, lbl in enumerate(chosen_compare):
+                    k = MODEL_ZOO[lbl]
+                    try:
+                        cls = REGISTRY[k]
+                        defaults = {p: spec[0] for p, spec in cls.param_schema().items()}
+                        m = cls(**defaults)
+                        m.fit(prep)
+                        r = m.predict_forward()
+                        p5 = float(r.percentiles[5][-1])
+                        p50 = float(r.percentiles[50][-1])
+                        p95 = float(r.percentiles[95][-1])
+                        exp = float(r.expected_price)
+                        if all(np.isfinite(v) for v in (p5, p50, p95, exp)):
+                            rows.append({
+                                "Model": lbl,
+                                "Expected": exp, "P5": p5, "P50": p50, "P95": p95,
+                                "Implied return %": (p50 / r.S0 - 1) * 100,
+                                "Band width %": (p95 - p5) / r.S0 * 100,
+                            })
+                    except Exception:
+                        pass
+                    prog.progress((i + 1) / len(chosen_compare))
+                prog.empty()
+                st.session_state.compare_result = (cmp_key, rows)
+
+            cached_cmp = st.session_state.get("compare_result")
+            if cached_cmp and cached_cmp[0] == cmp_key and cached_cmp[1]:
+                rows = cached_cmp[1]
+                entry = result_forward.S0
+                cmp_df = pd.DataFrame(rows)
+                fmt = {
+                    "Expected": "{:,.2f}", "P5": "{:,.2f}", "P50": "{:,.2f}",
+                    "P95": "{:,.2f}", "Implied return %": "{:+.1f}%",
+                    "Band width %": "{:.1f}%",
+                }
+                st.dataframe(
+                    cmp_df.style.format(fmt),
+                    use_container_width=True, hide_index=True,
+                )
+                import plotly.graph_objects as go
+
+                fig_cmp = go.Figure()
+                for row in rows:
+                    fig_cmp.add_trace(go.Scatter(
+                        x=[row["P5"], row["P95"]], y=[row["Model"], row["Model"]],
+                        mode="lines", line=dict(width=6),
+                        showlegend=False,
+                        hovertemplate="P5–P95: %{x:.2f}<extra></extra>",
+                    ))
+                    fig_cmp.add_trace(go.Scatter(
+                        x=[row["P50"]], y=[row["Model"]], mode="markers",
+                        marker=dict(size=12, symbol="diamond"),
+                        showlegend=False,
+                        hovertemplate="P50: %{x:.2f}<extra></extra>",
+                    ))
+                fig_cmp.add_vline(
+                    x=entry, line_dash="dash",
+                    annotation_text=f"Entry ${entry:,.2f}",
+                )
+                fig_cmp.update_layout(
+                    template="plotly_dark",
+                    height=90 + 42 * len(rows),
+                    margin=dict(l=10, r=10, t=30, b=10),
+                    xaxis_title="Terminal price  (bar = P5–P95, ◆ = median P50)",
+                )
+                st.plotly_chart(fig_cmp, use_container_width=True)
+                st.caption(
+                    "Each bar spans the model's P5–P95 terminal range; the diamond "
+                    "is the median. Dashed line = today's entry price. Single-path "
+                    "models (e.g. GBM) show as a point."
+                )
+            elif chosen_compare:
+                st.caption("Press **Run comparison** to fetch each model's forecast.")
 
             st.divider()
 
