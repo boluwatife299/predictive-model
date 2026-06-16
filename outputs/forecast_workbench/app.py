@@ -378,14 +378,36 @@ if data_ok:
         def _load_fundamentals(tk: str, ac: str):
             return get_fundamentals(tk, ac)
 
-        with st.spinner("Loading fundamentals…"):
-            try:
-                fund = _load_fundamentals(ticker, asset_class)
-            except Exception as exc:
-                fund = None
-                st.caption(f"Fundamentals unavailable: {exc}")
+        # Fetch on demand only. yfinance's .info is a slow web-scrape; Streamlit
+        # executes the body of *every* tab on each rerun, so calling it eagerly
+        # here would stall app startup (perpetual loading spinner). Gate it
+        # behind a button so the network call only fires when the user asks.
+        fund_key = (ticker, asset_class)
+        if st.button("📥 Load / refresh fundamentals", key="load_fund"):
+            with st.spinner("Loading fundamentals…"):
+                try:
+                    st.session_state.fundamentals = (fund_key, _load_fundamentals(ticker, asset_class))
+                    st.session_state.fund_error = None
+                except Exception as exc:
+                    st.session_state.fundamentals = (fund_key, None)
+                    st.session_state.fund_error = str(exc)
 
-        if fund is not None:
+        cached_fund = st.session_state.get("fundamentals")
+        fund = cached_fund[1] if cached_fund and cached_fund[0] == fund_key else None
+
+        if (
+            fund is None
+            and st.session_state.get("fund_error")
+            and cached_fund and cached_fund[0] == fund_key
+        ):
+            st.caption(f"Fundamentals unavailable: {st.session_state.fund_error}")
+
+        if fund is None:
+            st.caption(
+                f"Press **Load / refresh fundamentals** to pull valuation, "
+                f"profitability, growth and analyst data for {ticker}."
+            )
+        else:
             if not fund.applicable:
                 st.info(fund.note)
             else:
