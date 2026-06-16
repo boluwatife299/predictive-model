@@ -254,6 +254,23 @@ if data_ok:
                 model.fit(prep)
                 result = model.predict()                    # validation (training-end)
                 result_forward = model.predict_forward()    # forecast (today)
+
+                # Reject degenerate forecasts (NaN/inf) before they reach the
+                # chart or the database — almost always insufficient history.
+                check_vals = [
+                    result_forward.S0, result_forward.mu, result_forward.sigma,
+                    result_forward.percentiles[50][-1],
+                    result_forward.percentiles[5][-1],
+                    result_forward.percentiles[95][-1],
+                ]
+                if not all(np.isfinite(v) for v in check_vals):
+                    raise ValueError(
+                        f"The forecast for {ticker} came back invalid (NaN). This "
+                        f"usually means {ticker} has too little price history to "
+                        "estimate drift and volatility. Try a longer historical "
+                        "window, or pick a more liquid ticker."
+                    )
+
                 st.session_state.result = result
                 st.session_state.result_forward = result_forward
                 st.session_state.last_ticker = ticker

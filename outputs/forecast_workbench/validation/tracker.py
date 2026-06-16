@@ -12,6 +12,7 @@ for any deployed instance — the local SQLite disk is wiped on redeploy.
 from __future__ import annotations
 
 import json
+import math
 from datetime import datetime, timezone
 from typing import Any
 
@@ -19,6 +20,11 @@ import pandas as pd
 from sqlalchemy import insert, select
 
 from validation.store import get_engine, model_runs
+
+
+def _finite(*values: float) -> bool:
+    """True only if every value is a finite real number (no NaN / inf)."""
+    return all(isinstance(v, (int, float)) and math.isfinite(v) for v in values)
 
 
 def log_run(
@@ -32,6 +38,21 @@ def log_run(
     Raises on failure — the caller is responsible for deciding whether to
     surface the error to the user (it must, otherwise runs silently vanish).
     """
+    s0 = float(result.S0)
+    p50 = float(result.percentiles[50][-1])
+    p5 = float(result.percentiles[5][-1])
+    p95 = float(result.percentiles[95][-1])
+    mu = float(result.mu)
+    sigma = float(result.sigma)
+
+    # Refuse to persist a degenerate run rather than hit a cryptic NOT NULL error.
+    if not _finite(s0, p50, p5, p95, mu, sigma):
+        raise ValueError(
+            f"Forecast for {ticker} contains non-finite values (NaN) — the model "
+            "could not estimate valid drift/volatility, usually due to insufficient "
+            "price history. Run not saved."
+        )
+
     engine = get_engine()
     stmt = insert(model_runs).values(
         run_at=datetime.now(timezone.utc),
@@ -39,12 +60,12 @@ def log_run(
         asset_class=asset_class,
         model_name=result.model_name,
         horizon_days=int(result.params.get("horizon_days", len(result.dates) - 1)),
-        s0=float(result.S0),
-        predicted_p50=float(result.percentiles[50][-1]),
-        predicted_p5=float(result.percentiles[5][-1]),
-        predicted_p95=float(result.percentiles[95][-1]),
-        mu=float(result.mu),
-        sigma=float(result.sigma),
+        s0=s0,
+        predicted_p50=p50,
+        predicted_p5=p5,
+        predicted_p95=p95,
+        mu=mu,
+        sigma=sigma,
         params=json.dumps(result.params),
     )
     with engine.begin() as conn:
