@@ -60,15 +60,17 @@ model_runs = Table(
 def _resolve_url() -> str:
     """Return the database URL using the documented precedence."""
     url = os.getenv("DATABASE_URL")
+    src = "env DATABASE_URL"
     if not url:
         try:
             import streamlit as st  # imported lazily; tracker may run headless
 
             url = st.secrets.get("DATABASE_URL")  # type: ignore[assignment]
+            src = "st.secrets DATABASE_URL"
         except Exception:
             url = None
     if not url:
-        return f"sqlite:///{_SQLITE_PATH}"
+        return f"sqlite:///{_SQLITE_PATH}", False, "no DATABASE_URL configured"
 
     # Supabase / Heroku hand out "postgres://" which SQLAlchemy rejects;
     # normalise to the driver-qualified form.
@@ -76,26 +78,66 @@ def _resolve_url() -> str:
         url = url.replace("postgres://", "postgresql+psycopg2://", 1)
     elif url.startswith("postgresql://"):
         url = url.replace("postgresql://", "postgresql+psycopg2://", 1)
-    return url
+    return url, True, src
 
 
 _engine: Engine | None = None
+_SQLITE_FALLBACK = f"sqlite:///{_SQLITE_PATH}"
+
+# Diagnostic status, populated on first get_engine() call.
+_status: dict = {
+    "configured": False,   # was a DATABASE_URL found at all?
+    "connected": False,    # did we actually connect to managed Postgres?
+    "driver": "sqlite",
+    "source": "default",
+    "error": None,         # connection error reason, if any
+}
 
 
 def get_engine() -> Engine:
-    """Return a process-wide cached SQLAlchemy engine, creating tables once."""
+    """
+    Return a process-wide cached SQLAlchemy engine.
+
+    If a DATABASE_URL is configured but the connection fails, we fall back to
+    local SQLite (so the app still runs) and record the failure reason in the
+    status dict — never crash the whole app over a bad connection string.
+    """
     global _engine
-    if _engine is None:
-        url = _resolve_url()
+    if _engine is not None:
+        return _engine
+
+    url, configured, source = _resolve_url()
+    _status["configured"] = configured
+    _status["source"] = source
+
+    try:
         connect_args = {}
         if url.startswith("sqlite"):
-            # Streamlit reruns happen across threads; this is required.
-            connect_args["check_same_thread"] = False
-        _engine = create_engine(url, connect_args=connect_args, pool_pre_ping=True)
-        metadata.create_all(_engine)
-    return _engine
+            connect_args["check_same_thread"] = False  # Streamlit threads reruns
+        engine = create_engine(url, connect_args=connect_args, pool_pre_ping=True)
+        metadata.create_all(engine)          # forces a real connection
+        _engine = engine
+        _status["driver"] = engine.url.drivername
+        _status["connected"] = not engine.url.drivername.startswith("sqlite")
+        _status["error"] = None if configured else "no DATABASE_URL configured"
+        return _engine
+    except Exception as exc:
+        # Managed DB unreachable / bad credentials — degrade to SQLite, remember why.
+        _status["connected"] = False
+        _status["error"] = f"{type(exc).__name__}: {exc}"
+        engine = create_engine(_SQLITE_FALLBACK, connect_args={"check_same_thread": False})
+        metadata.create_all(engine)
+        _engine = engine
+        _status["driver"] = "sqlite (fallback)"
+        return _engine
+
+
+def get_status() -> dict:
+    """Return a copy of the persistence diagnostic status (engine resolved lazily)."""
+    get_engine()
+    return dict(_status)
 
 
 def is_cloud_persistent() -> bool:
     """True when backed by a managed DB rather than ephemeral local SQLite."""
-    return not get_engine().url.drivername.startswith("sqlite")
+    return get_status()["connected"]

@@ -17,6 +17,8 @@ import streamlit as st
 # Make sure local packages are importable when launched from the project root
 sys.path.insert(0, str(Path(__file__).parent))
 
+from analysis import llm
+from analysis.drivers import get_drivers
 from analysis.fundamentals import get_fundamentals
 from analysis.model_docs import MODEL_DOCS
 from analysis.signals import compute_signals
@@ -32,7 +34,7 @@ from data.fetcher import DataFetcher
 from data.preprocessor import Preprocessor
 from models import REGISTRY, UNAVAILABLE
 from validation.ledger import ValidationLedger
-from validation.store import is_cloud_persistent
+from validation.store import get_status
 from validation.tracker import enrich_with_actuals, load_runs, log_run
 from visualization.charts import (
     plot_gbm,
@@ -378,18 +380,70 @@ if data_ok:
                 }
                 st.table(pd.DataFrame(beh_rows.items(), columns=["Metric", "Value"]))
 
-            # ── Daily news / trends (AI — Phase 5) ─────────────────────────
-            with st.expander("📰 Daily news & trends"):
+            # ── Daily news / trends (AI) ───────────────────────────────────
+            st.divider()
+            st.subheader("📰 Daily news & trends")
+            if not llm.is_available():
                 st.caption(
-                    "AI-generated news and trend context will appear here once the "
-                    "AI layer is wired up (set `ANTHROPIC_API_KEY` in secrets)."
+                    "AI brief is off. Add `ANTHROPIC_API_KEY` to your Streamlit "
+                    "secrets to enable live, web-searched news and trend context "
+                    "for the selected instrument. (Optional: set `AI_MODEL` to "
+                    "`claude-sonnet-4-6` for cheaper calls.)"
                 )
+            else:
+                brief_key = f"{ticker}|{asset_class}"
+                if st.button("🔎 Generate AI market brief", key="ai_brief"):
+                    with st.spinner("Searching the web and writing the brief…"):
+                        try:
+                            brief = llm.generate_market_brief(
+                                ticker=ticker,
+                                asset_class=asset_class,
+                                display_name=ticker,
+                                regime=signals.regime,
+                                tailwinds=signals.tailwinds,
+                                headwinds=signals.headwinds,
+                                driver_categories=get_drivers(ticker, asset_class),
+                            )
+                            st.session_state.ai_brief = (brief_key, brief)
+                            st.session_state.ai_brief_error = None
+                        except Exception as exc:
+                            st.session_state.ai_brief = (brief_key, None)
+                            st.session_state.ai_brief_error = str(exc)
+
+                cached_brief = st.session_state.get("ai_brief")
+                if cached_brief and cached_brief[0] == brief_key:
+                    if st.session_state.get("ai_brief_error"):
+                        st.error(f"AI brief failed: {st.session_state.ai_brief_error}")
+                    elif cached_brief[1]:
+                        st.markdown(cached_brief[1])
+                        st.caption(
+                            "AI-generated from live web search — verify before "
+                            "acting. Not investment advice."
+                        )
+                else:
+                    st.caption(
+                        f"Press **Generate AI market brief** for live news and "
+                        f"trends on {ticker}."
+                    )
 
 # ── Validation tab ────────────────────────────────────────────────────────────
 
     with tab_validate:
         # ── Fundamental analysis (instrument-level, shown regardless of run) ──
         st.subheader(f"🏛️ Fundamental Analysis — {ticker}")
+
+        # Structured price drivers for non-corporate assets (commodities, crypto,
+        # rates, macro). Free/rule-based, so always rendered for those classes.
+        _drivers = get_drivers(ticker, asset_class)
+        if _drivers:
+            st.markdown("**What moves this instrument**")
+            dcols = st.columns(min(len(_drivers), 3))
+            for i, (cat, factors) in enumerate(_drivers.items()):
+                with dcols[i % len(dcols)]:
+                    st.markdown(f"*{cat}*")
+                    for f in factors:
+                        st.markdown(f"- {f}")
+            st.divider()
 
         @st.cache_data(ttl=3600, show_spinner=False)
         def _load_fundamentals(tk: str, ac: str):
@@ -545,18 +599,31 @@ if data_ok:
             "and the error is calculated automatically."
         )
 
-        # Persistence status — make it obvious whether runs survive a redeploy.
-        if is_cloud_persistent():
+        # Persistence status — make it obvious whether runs survive a redeploy,
+        # and *why* if they won't.
+        status = get_status()
+        if status["connected"]:
             st.success(
                 "🟢 Connected to managed Postgres — history persists across "
                 "restarts and redeploys."
             )
+        elif status["configured"]:
+            # A DATABASE_URL was found but the connection failed → show the reason.
+            st.error(
+                "🔴 `DATABASE_URL` is set but the database connection **failed**, "
+                "so the app fell back to local SQLite (runs will not persist in the "
+                f"cloud). Reason:\n\n```\n{status['error']}\n```\n\n"
+                "Common causes: wrong password, using the **direct** connection "
+                "(port 5432, IPv6-only) instead of the **Transaction pooler** "
+                "(port 6543, host `…pooler.supabase.com`), or an un-encoded special "
+                "character in the password."
+            )
         else:
             st.warning(
-                "🟡 Using local SQLite. History persists on this machine only — "
-                "a cloud deployment will **lose runs on every redeploy**. Set "
-                "`DATABASE_URL` (e.g. a Supabase connection string) in your "
-                "Streamlit secrets to persist history in the cloud."
+                "🟡 No `DATABASE_URL` detected — using local SQLite. History persists "
+                "on this machine only; a cloud deployment will **lose runs on every "
+                "redeploy**. Add `DATABASE_URL` (your Supabase pooler string) to your "
+                "Streamlit **Settings → Secrets** to persist history in the cloud."
             )
 
         if st.session_state.get("log_error"):
