@@ -385,10 +385,11 @@ if data_ok:
             st.subheader("📰 Daily news & trends")
             if not llm.is_available():
                 st.caption(
-                    "AI brief is off. Add `ANTHROPIC_API_KEY` to your Streamlit "
-                    "secrets to enable live, web-searched news and trend context "
-                    "for the selected instrument. (Optional: set `AI_MODEL` to "
-                    "`claude-sonnet-4-6` for cheaper calls.)"
+                    "AI brief is off. Add `GEMINI_API_KEY` to your Streamlit "
+                    "secrets (free tier at aistudio.google.com/apikey) to enable "
+                    "live, Google-searched news and trend context. To use Claude "
+                    "instead, set `AI_PROVIDER = \"anthropic\"` and add "
+                    "`ANTHROPIC_API_KEY`."
                 )
             else:
                 brief_key = f"{ticker}|{asset_class}"

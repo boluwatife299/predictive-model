@@ -10,7 +10,10 @@ python-dotenv>=1.0.0
 SQLAlchemy>=2.0.0
 psycopg2-binary>=2.9.0
 
-# AI narrative layer (daily news & trends) — optional, needs ANTHROPIC_API_KEY
+# AI narrative layer (daily news & trends) — optional.
+# Default provider is Gemini (needs GEMINI_API_KEY); Anthropic is selectable
+# via AI_PROVIDER=anthropic (needs ANTHROPIC_API_KEY).
+google-genai>=1.0.0
 anthropic>=0.40.0
 
 # Statistical models
