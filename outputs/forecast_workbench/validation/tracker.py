@@ -88,11 +88,29 @@ def load_runs() -> pd.DataFrame:
     return df
 
 
-def enrich_with_actuals(df: pd.DataFrame, price_series: pd.Series) -> pd.DataFrame:
+def enrich_with_actuals(
+    df: pd.DataFrame,
+    price_map: dict[str, pd.Series],
+) -> pd.DataFrame:
     """
-    Given a DataFrame of past runs and a current price series,
-    add columns for the actual terminal price and the prediction error
-    for any run whose forecast horizon has already elapsed.
+    Add ``actual_terminal`` and ``error_pct`` columns to a runs DataFrame.
+
+    Each run is scored against **its own ticker's** realised price history, so a
+    gold run is compared to gold and an equity run to that equity — never one
+    ticker's price smeared across every row (the bug that produced a constant
+    "Actual Price" and nonsensical error percentages).
+
+    Parameters
+    ----------
+    df : DataFrame of past runs. Needs ``ticker``, ``run_at``, ``horizon_days``
+         and ``predicted_p50`` columns.
+    price_map : ``{ticker: close-price Series indexed by date}`` for every
+         ticker to be scored. Tickers absent from the map (e.g. delisted) are
+         left unscored rather than mismatched.
+
+    For each run we take the first available close on or after the forecast's
+    target date (run date + horizon) and compute the **signed percentage error**
+    of the P50 prediction:  ``(predicted − actual) / actual × 100``.
     """
     if df.empty:
         return df
@@ -102,15 +120,20 @@ def enrich_with_actuals(df: pd.DataFrame, price_series: pd.Series) -> pd.DataFra
     df["error_pct"] = None
 
     for idx, row in df.iterrows():
+        series = price_map.get(row["ticker"])
+        if series is None or series.empty:
+            continue
         run_date = pd.Timestamp(row["run_at"]).tz_localize(None)
         target_date = run_date + pd.Timedelta(days=int(row["horizon_days"]))
-        # Find the closest available price on or after the target date
-        future_prices = price_series[price_series.index >= target_date]
+        # First available close on or after the target date.
+        future_prices = series[series.index >= target_date]
         if future_prices.empty:
             continue
         actual = float(future_prices.iloc[0])
+        if actual == 0:
+            continue
         predicted = float(row["predicted_p50"])
-        df.at[idx, "actual_terminal"] = actual
+        df.at[idx, "actual_terminal"] = round(actual, 4)
         df.at[idx, "error_pct"] = round((predicted - actual) / actual * 100, 2)
 
     return df
