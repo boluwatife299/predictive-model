@@ -338,3 +338,113 @@ def plot_terminal_distribution(result: ModelResult) -> go.Figure:
         showlegend=False,
     )
     return fig
+
+
+# ── Backtest: equity curve vs buy & hold ──────────────────────────────────────
+
+def plot_equity_curve(equity: pd.Series, benchmark: pd.Series) -> go.Figure:
+    """Strategy equity curve overlaid on a buy-&-hold benchmark (both start at 1)."""
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=benchmark.index, y=benchmark.values, mode="lines",
+        name="Buy & hold", line=dict(color=PALETTE["historical"], width=2),
+    ))
+    fig.add_trace(go.Scatter(
+        x=equity.index, y=equity.values, mode="lines",
+        name="Strategy", line=dict(color=PALETTE["median"], width=2.5),
+    ))
+    fig.add_hline(y=1.0, line_dash="dash", line_color="rgba(255,255,255,0.25)")
+    fig.update_layout(
+        title="Equity Curve — Strategy vs Buy & Hold",
+        template=CHART_THEME, xaxis_title="Date", yaxis_title="Growth of $1",
+        height=420, legend=dict(orientation="h", y=1.02),
+        margin=dict(l=40, r=20, t=60, b=20), hovermode="x unified",
+    )
+    return fig
+
+
+# ── Backtest: underwater drawdown ─────────────────────────────────────────────
+
+def plot_drawdown(equity: pd.Series) -> go.Figure:
+    """Underwater plot — percentage below the running peak."""
+    dd = (equity / equity.cummax() - 1.0) * 100.0
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=dd.index, y=dd.values, mode="lines", fill="tozeroy",
+        name="Drawdown", line=dict(color=PALETTE["error"], width=1.5),
+        fillcolor="rgba(255,123,123,0.25)",
+    ))
+    fig.update_layout(
+        title="Drawdown (underwater)",
+        template=CHART_THEME, xaxis_title="Date", yaxis_title="Drawdown %",
+        height=300, margin=dict(l=40, r=20, t=60, b=20),
+        showlegend=False, hovermode="x unified",
+    )
+    return fig
+
+
+# ── Backtest: trade-sequence Monte Carlo ──────────────────────────────────────
+
+def plot_mc_distribution(final_returns: np.ndarray, pctiles: dict[int, float]) -> go.Figure:
+    """Histogram of simulated final returns with P5/P50/P95 markers."""
+    fig = go.Figure()
+    fig.add_trace(go.Histogram(
+        x=final_returns * 100.0, nbinsx=60,
+        marker_color=PALETTE["historical"], opacity=0.8, name="Final return",
+    ))
+    for p, colour, dash in [
+        (5, PALETTE["error"], "dash"),
+        (50, PALETTE["median"], "solid"),
+        (95, PALETTE["actual"], "dash"),
+    ]:
+        fig.add_vline(
+            x=pctiles[p] * 100.0, line_dash=dash, line_color=colour,
+            annotation_text=f"P{p} {pctiles[p]*100:.0f}%", annotation_position="top",
+        )
+    fig.add_vline(x=0, line_dash="dot", line_color="rgba(255,255,255,0.4)")
+    fig.update_layout(
+        title="Trade-Sequence Monte Carlo — Distribution of Final Returns",
+        template=CHART_THEME, xaxis_title="Final return %", yaxis_title="Frequency",
+        height=380, margin=dict(l=40, r=20, t=60, b=20), showlegend=False,
+    )
+    return fig
+
+
+# ── Replay: progressive price with trade markers ──────────────────────────────
+
+def plot_replay(
+    df_visible: pd.DataFrame,
+    ticker: str,
+    markers: list[dict] | None = None,
+) -> go.Figure:
+    """
+    Price line revealed up to the current replay bar, with entry/exit markers.
+    ``markers`` is a list of {date, price, kind} where kind ∈ {long, short, exit}.
+    """
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=df_visible.index, y=df_visible["Close"], mode="lines",
+        name="Close", line=dict(color=PALETTE["historical"], width=2),
+    ))
+    style = {
+        "long":  ("triangle-up", PALETTE["actual"], "Long"),
+        "short": ("triangle-down", PALETTE["error"], "Short"),
+        "exit":  ("x", PALETTE["median"], "Exit"),
+    }
+    for kind, (symbol, colour, label) in style.items():
+        pts = [m for m in (markers or []) if m["kind"] == kind]
+        if not pts:
+            continue
+        fig.add_trace(go.Scatter(
+            x=[m["date"] for m in pts], y=[m["price"] for m in pts],
+            mode="markers", name=label,
+            marker=dict(symbol=symbol, color=colour, size=12,
+                        line=dict(width=1, color="rgba(0,0,0,0.4)")),
+        ))
+    fig.update_layout(
+        title=f"{ticker} — Replay",
+        template=CHART_THEME, xaxis_title="Date", yaxis_title="Price",
+        height=460, legend=dict(orientation="h", y=1.02),
+        margin=dict(l=40, r=20, t=60, b=20), hovermode="x unified",
+    )
+    return fig
