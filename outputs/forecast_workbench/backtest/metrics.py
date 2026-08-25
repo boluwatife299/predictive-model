@@ -42,11 +42,48 @@ def compute_metrics(bt: BacktestResult) -> dict[str, float]:
     vol = float(np.std(rets, ddof=1)) if len(rets) > 1 else float("nan")
     mean_r = float(np.mean(rets)) if len(rets) else float("nan")
     sharpe = (mean_r / vol * np.sqrt(TRADING_DAYS)) if (vol and vol > 0) else float("nan")
-    downside = rets[rets < 0]
-    dvol = float(np.std(downside, ddof=1)) if len(downside) > 1 else float("nan")
-    sortino = (mean_r / dvol * np.sqrt(TRADING_DAYS)) if (dvol and dvol > 0) else float("nan")
+
+    # Downside deviation, defined over EVERY bar — not over the negative subset.
+    #
+    # The old form took np.std(rets[rets < 0]), which is wrong twice: it measures
+    # spread *about the mean of the losses* rather than shortfall below the target,
+    # and it divides by the number of losing bars instead of the number of bars.
+    # On a strategy that is flat most of the time (here ~21% time in market) the
+    # denominator collapsed to a small set of genuinely negative days, so the
+    # "downside" figure came out LARGER than full volatility and Sortino printed
+    # below Sharpe. Sortino must exceed Sharpe whenever the return distribution is
+    # not left-skewed relative to the target, and this is the definition that
+    # holds that property: sqrt(mean(min(r - MAR, 0)^2)) over all bars.
+    mar = 0.0                                   # minimum acceptable return, per bar
+    shortfall = np.minimum(rets - mar, 0.0)
+    dvol = float(np.sqrt(np.mean(shortfall ** 2))) if len(rets) else float("nan")
+    sortino = (
+        ((mean_r - mar) / dvol * np.sqrt(TRADING_DAYS))
+        if (dvol and dvol > 0) else float("nan")
+    )
     calmar = (cagr / abs(max_dd)) if (max_dd and max_dd < 0) else float("nan")
     exposure = float((bt.positions != 0).mean()) if len(bt.positions) else float("nan")
+
+    # Both ratios above annualise over the FULL test period, counting flat bars as
+    # zero-return bars. That is the correct basis for comparing against buy-&-hold,
+    # but it dilutes a strategy that is only in the market part of the time. The
+    # 'active' pair below annualises over in-market bars only, which answers the
+    # different question "how good is the edge while it is actually deployed?".
+    # They are reported side by side and never mixed: quoting a full-period Sharpe
+    # against an active-bar Sortino is the classic way to manufacture an inversion.
+    in_mkt = bt.positions.to_numpy() != 0
+    act = rets[in_mkt[: len(rets)]] if len(rets) else np.array([])
+    if len(act) > 1:
+        a_mean = float(np.mean(act))
+        a_vol = float(np.std(act, ddof=1))
+        a_short = np.minimum(act - mar, 0.0)
+        a_dvol = float(np.sqrt(np.mean(a_short ** 2)))
+        sharpe_active = (a_mean / a_vol * np.sqrt(TRADING_DAYS)) if a_vol > 0 else float("nan")
+        sortino_active = (
+            (a_mean - mar) / a_dvol * np.sqrt(TRADING_DAYS)
+        ) if a_dvol > 0 else float("nan")
+    else:
+        sharpe_active = sortino_active = float("nan")
 
     # ── Benchmark ───────────────────────────────────────────────────────────
     bench_return = float(bt.benchmark.iloc[-1] - 1.0) if len(bt.benchmark) else float("nan")
@@ -76,6 +113,8 @@ def compute_metrics(bt: BacktestResult) -> dict[str, float]:
         "max_drawdown": _safe(max_dd),
         "sharpe": _safe(sharpe),
         "sortino": _safe(sortino),
+        "sharpe_active": _safe(sharpe_active),
+        "sortino_active": _safe(sortino_active),
         "calmar": _safe(calmar),
         "exposure": _safe(exposure),
         "benchmark_return": _safe(bench_return),
@@ -107,8 +146,10 @@ def metrics_table(m: dict[str, float]) -> pd.DataFrame:
         ("Excess vs buy & hold", pct(m["excess_return"])),
         ("CAGR", pct(m["cagr"])),
         ("Max drawdown", pct(m["max_drawdown"])),
-        ("Sharpe (ann.)", num(m["sharpe"])),
-        ("Sortino (ann.)", num(m["sortino"])),
+        ("Sharpe (ann., full period)", num(m["sharpe"])),
+        ("Sortino (ann., full period)", num(m["sortino"])),
+        ("Sharpe (ann., in-market bars)", num(m.get("sharpe_active", float("nan")))),
+        ("Sortino (ann., in-market bars)", num(m.get("sortino_active", float("nan")))),
         ("Calmar", num(m["calmar"])),
         ("Time in market", pct(m["exposure"])),
         ("Trades", f"{int(m['n_trades'])}"),

@@ -50,6 +50,17 @@ class ModelResult:
                 self.percentiles[p] = np.percentile(self.paths, p, axis=0)
 
     @property
+    def is_single_path(self) -> bool:
+        """
+        True when the model produced one deterministic trajectory rather than a
+        distribution. For these, np.percentile over a single path returns that
+        same path for every percentile, so P5 == P50 == P95 by construction.
+        Those columns are not a 90% interval and must never be displayed as one:
+        callers suppress them rather than printing a zero-width band.
+        """
+        return self.paths.shape[0] < 2
+
+    @property
     def terminal_prices(self) -> np.ndarray:
         """Final price of every path."""
         return self.paths[:, -1]

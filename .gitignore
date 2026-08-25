@@ -1,4 +1,3 @@
-
 # Local persistence — ephemeral, never commit (use DATABASE_URL/Postgres in cloud)
 outputs/forecast_workbench/validation/model_runs.db
 **/__pycache__/
@@ -7,3 +6,12 @@ outputs/forecast_workbench/validation/model_runs.db
 
 # Streamlit secrets — never commit real credentials
 outputs/forecast_workbench/.streamlit/secrets.toml
+
+# Jupyter checkpoint copies — editor scratch, regenerated on every save
+.ipynb_checkpoints/
+**/.ipynb_checkpoints/
+
+# Claude Code audit log and its HMAC signing key — local session transcripts,
+# no business being in a public repository
+.audit-key
+audit.jsonl

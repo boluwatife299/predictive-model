@@ -33,7 +33,7 @@ from config.settings import (
 )
 from data.fetcher import DataFetcher
 from data.preprocessor import Preprocessor
-from models import REGISTRY, UNAVAILABLE
+from models import REGISTRY
 from strategy import MODEL_DRIVEN, STRATEGY_REGISTRY
 from backtest import compute_metrics, metrics_table, run_backtest, trade_sequence_mc
 from validation.ledger import ValidationLedger
@@ -129,20 +129,8 @@ with st.sidebar:
 
     st.divider()
 
-    # Model selection — exclude models whose deps aren't installed
-    available_model_labels = [
-        label for label, key in MODEL_ZOO.items()
-        if key not in UNAVAILABLE
-    ]
-    if UNAVAILABLE:
-        unavailable_names = ", ".join(
-            label for label, key in MODEL_ZOO.items() if key in UNAVAILABLE
-        )
-        st.caption(
-            f"ℹ️ Not available in this environment (heavy deps): {unavailable_names}. "
-            "Install locally with `pip install prophet tensorflow-cpu`."
-        )
-    model_label = st.selectbox("Model", available_model_labels)
+    # Model selection
+    model_label = st.selectbox("Model", list(MODEL_ZOO.keys()))
     model_key = MODEL_ZOO[model_label]
     ModelClass = REGISTRY[model_key]
 
@@ -197,6 +185,25 @@ if "raw_df" not in st.session_state:
     st.session_state.raw_df = None
 if "last_ticker" not in st.session_state:
     st.session_state.last_ticker = None
+
+# ── Instrument-change invalidation ────────────────────────────────────────────
+# Every cached artefact below is derived from ONE instrument. Streamlit keeps
+# session_state across reruns, so without this block a forecast computed for
+# AAPL survives a switch to TLT and gets drawn against TLT's price history —
+# the chart then shows an $85 instrument with a $310 entry line. Anything keyed
+# to the instrument is cleared the moment the instrument changes.
+_instrument = (ticker, asset_class)
+if st.session_state.get("last_instrument") != _instrument:
+    for _k in (
+        "result", "result_forward", "compare_result", "mc_result",
+        "bt_result", "bt_meta", "bt_error", "ai_brief_result", "ai_brief_error",
+        "fundamentals", "fund_error", "run_error", "log_error", "replay_i",
+    ):
+        st.session_state.pop(_k, None)
+    st.session_state.result = None
+    st.session_state.result_forward = None
+    st.session_state.last_instrument = _instrument
+    st.session_state.last_ticker = ticker
 
 # ── Load data ─────────────────────────────────────────────────────────────────
 
@@ -294,6 +301,7 @@ if data_ok:
                 st.session_state.result = result
                 st.session_state.result_forward = result_forward
                 st.session_state.last_ticker = ticker
+                st.session_state.result_instrument = (ticker, asset_class)
                 st.session_state.run_error = None
                 try:
                     log_run(ticker=ticker, asset_class=asset_class, result=result_forward)
@@ -309,6 +317,15 @@ if data_ok:
 
     result = st.session_state.result
     result_forward = st.session_state.result_forward
+
+    # Belt-and-braces: a result carrying a different instrument stamp is stale
+    # and must never reach a chart. Cheaper to re-run than to show a wrong price.
+    if (
+        result_forward is not None
+        and st.session_state.get("result_instrument") != (ticker, asset_class)
+    ):
+        result = result_forward = None
+        st.session_state.result = st.session_state.result_forward = None
 
 # ── Forecast tab ──────────────────────────────────────────────────────────────
 
@@ -327,11 +344,24 @@ if data_ok:
 
             st.plotly_chart(fig, width="stretch")
 
-            col1, col2, col3, col4 = st.columns(4)
-            col1.metric("Entry Price (S₀)",     f"${result_forward.S0:,.2f}")
-            col2.metric("Expected Terminal",    f"${result_forward.expected_price:,.2f}")
-            col3.metric("5th Pct Terminal",     f"${result_forward.price_at_percentile[5]:,.2f}")
-            col4.metric("95th Pct Terminal",    f"${result_forward.price_at_percentile[95]:,.2f}")
+            if result_forward.is_single_path:
+                col1, col2 = st.columns(2)
+                col1.metric("Entry Price (S₀)",  f"${result_forward.S0:,.2f}")
+                col2.metric("Projected Terminal", f"${result_forward.expected_price:,.2f}")
+                st.caption(
+                    f"**{result_forward.model_name}** returns a single deterministic "
+                    "path, so there is no terminal distribution and no percentile "
+                    "interval to report. This is a drift extrapolation: the projected "
+                    "price carries error that this model does not quantify. Run a "
+                    "multi-path model (Monte Carlo, Heston, jump-diffusion, GARCH) "
+                    "for a genuine interval."
+                )
+            else:
+                col1, col2, col3, col4 = st.columns(4)
+                col1.metric("Entry Price (S₀)",     f"${result_forward.S0:,.2f}")
+                col2.metric("Expected Terminal",    f"${result_forward.expected_price:,.2f}")
+                col3.metric("5th Pct Terminal",     f"${result_forward.price_at_percentile[5]:,.2f}")
+                col4.metric("95th Pct Terminal",    f"${result_forward.price_at_percentile[95]:,.2f}")
 
             if model_key not in SINGLE_PATH_MODELS:
                 st.plotly_chart(
@@ -386,17 +416,16 @@ if data_ok:
                 "parameters) and compare today's forward forecast side by side. "
                 "Big disagreement between models = high genuine uncertainty."
             )
-            compare_labels = [lbl for lbl, k in MODEL_ZOO.items() if k not in UNAVAILABLE]
+            compare_labels = list(MODEL_ZOO.keys())
             default_compare = [
                 lbl for lbl, k in MODEL_ZOO.items()
                 if k in {"gbm", "monte_carlo", "ou", "jump_diffusion", "garch"}
-                and k not in UNAVAILABLE
             ]
             chosen_compare = st.multiselect(
                 "Models to compare",
                 compare_labels,
                 default=default_compare,
-                help="Heavy ML models (XGBoost/LSTM/Prophet) are slower — add them only if you want to wait.",
+                help="XGBoost is slower than the closed-form models: add it only if you want to wait.",
             )
             cmp_key = (ticker, asset_class,
                        tuple(sorted(MODEL_ZOO[l] for l in chosen_compare)))
@@ -416,11 +445,20 @@ if data_ok:
                         p95 = float(r.percentiles[95][-1])
                         exp = float(r.expected_price)
                         if all(np.isfinite(v) for v in (p5, p50, p95, exp)):
+                            # A single-path model has no dispersion: P5/P50/P95 are
+                            # the same number and the "band" is 0.0% by construction.
+                            # Report those cells as absent rather than as a genuine
+                            # zero-width 90% interval.
+                            single = r.is_single_path
                             rows.append({
                                 "Model": lbl,
-                                "Expected": exp, "P5": p5, "P50": p50, "P95": p95,
+                                "Expected": exp,
+                                "P5": None if single else p5,
+                                "P50": p50,
+                                "P95": None if single else p95,
                                 "Implied return %": (p50 / r.S0 - 1) * 100,
-                                "Band width %": (p95 - p5) / r.S0 * 100,
+                                "Band width %": None if single else (p95 - p5) / r.S0 * 100,
+                                "Dispersion": "point forecast" if single else f"{r.paths.shape[0]:,} paths",
                             })
                     except Exception:
                         pass
@@ -433,10 +471,13 @@ if data_ok:
                 rows = cached_cmp[1]
                 entry = result_forward.S0
                 cmp_df = pd.DataFrame(rows)
+                def _f(spec):
+                    return lambda v: "—" if v is None or (isinstance(v, float) and not np.isfinite(v)) else spec.format(v)
+
                 fmt = {
-                    "Expected": "{:,.2f}", "P5": "{:,.2f}", "P50": "{:,.2f}",
-                    "P95": "{:,.2f}", "Implied return %": "{:+.1f}%",
-                    "Band width %": "{:.1f}%",
+                    "Expected": _f("{:,.2f}"), "P5": _f("{:,.2f}"), "P50": _f("{:,.2f}"),
+                    "P95": _f("{:,.2f}"), "Implied return %": _f("{:+.1f}%"),
+                    "Band width %": _f("{:.1f}%"),
                 }
                 st.dataframe(
                     cmp_df.style.format(fmt),
@@ -446,12 +487,13 @@ if data_ok:
 
                 fig_cmp = go.Figure()
                 for row in rows:
-                    fig_cmp.add_trace(go.Scatter(
-                        x=[row["P5"], row["P95"]], y=[row["Model"], row["Model"]],
-                        mode="lines", line=dict(width=6),
-                        showlegend=False,
-                        hovertemplate="P5–P95: %{x:.2f}<extra></extra>",
-                    ))
+                    if row["P5"] is not None and row["P95"] is not None:
+                        fig_cmp.add_trace(go.Scatter(
+                            x=[row["P5"], row["P95"]], y=[row["Model"], row["Model"]],
+                            mode="lines", line=dict(width=6),
+                            showlegend=False,
+                            hovertemplate="P5–P95: %{x:.2f}<extra></extra>",
+                        ))
                     fig_cmp.add_trace(go.Scatter(
                         x=[row["P50"]], y=[row["Model"]], mode="markers",
                         marker=dict(size=12, symbol="diamond"),
@@ -472,7 +514,11 @@ if data_ok:
                 st.caption(
                     "Each bar spans the model's P5–P95 terminal range; the diamond "
                     "is the median. Dashed line = today's entry price. Single-path "
-                    "models (e.g. GBM) show as a point."
+                    "models (e.g. GBM) are drift extrapolations, not distributions: "
+                    "they produce one trajectory, so no interval exists and the "
+                    "percentile columns are left blank rather than reported as a "
+                    "zero-width band. Read their diamond as a point estimate with "
+                    "unquantified error."
                 )
             elif chosen_compare:
                 st.caption("Press **Run comparison** to fetch each model's forecast.")
@@ -556,9 +602,16 @@ if data_ok:
                         st.error(f"AI brief failed: {st.session_state.ai_brief_error}")
                     elif cached_brief[1]:
                         st.markdown(cached_brief[1])
-                        st.caption(
-                            "AI-generated from live web search — verify before "
-                            "acting. Not investment advice."
+                        st.warning(
+                            "**Every figure above requires a source and a release "
+                            "date before you rely on it.** The model is instructed to "
+                            "attach both and to omit any number it cannot ground in "
+                            "search, but that instruction is best-effort, not a "
+                            "guarantee: language models restate stale training data "
+                            "in the same confident register as a retrieved fact. Treat "
+                            "any unsourced or undated statistic here as unverified and "
+                            "check it against the primary release before it informs a "
+                            "decision or leaves this screen. Not investment advice."
                         )
                 else:
                     st.caption(
@@ -814,6 +867,17 @@ if data_ok:
                 "error_pct": "Error %",
             }
 
+            # Historic rows from single-path models stored P5 == P50 == P95. Blank
+            # those cells so the table never presents a repeated point estimate as
+            # though it were a 90% interval.
+            degenerate = (
+                np.isclose(runs_df["predicted_p5"].astype(float),
+                           runs_df["predicted_p50"].astype(float))
+                & np.isclose(runs_df["predicted_p95"].astype(float),
+                             runs_df["predicted_p50"].astype(float))
+            )
+            runs_df.loc[degenerate, ["predicted_p5", "predicted_p95"]] = None
+
             display_df = runs_df[display_cols].rename(columns=rename_map)
             st.dataframe(display_df, width="stretch", hide_index=True)
 
@@ -823,15 +887,72 @@ if data_ok:
             completed = runs_df[runs_df["error_pct"].notna()].copy()
             if not completed.empty:
                 abs_err = completed["error_pct"].astype(float).abs()
+                q25, q50, q75 = (float(abs_err.quantile(q)) for q in (0.25, 0.50, 0.75))
+
                 st.subheader("Completed Run Stats")
-                col1, col2, col3, col4 = st.columns(4)
-                col1.metric("Total Runs Scored", len(completed))
-                col2.metric("Mean Abs Error %", f"{abs_err.mean():.2f}%")
-                col3.metric("Median Abs Error %", f"{abs_err.median():.2f}%")
-                col4.metric(
-                    "Runs Within ±5%",
-                    f"{(abs_err <= 5).sum()} / {len(completed)}",
+                st.caption(
+                    "Headline accuracy is the **median** absolute error with its "
+                    "interquartile range. Forecast-error distributions are heavy-tailed, "
+                    "so a mean is dominated by its worst single observation and reports "
+                    "a number no individual run resembles: it is not a summary of typical "
+                    "performance and is deliberately not shown here."
                 )
+                col1, col2, col3, col4 = st.columns(4)
+                col1.metric("Runs Scored", len(completed))
+                col2.metric("Median Abs Error", f"{q50:.2f}%")
+                col3.metric("IQR (P25–P75)", f"{q25:.2f}% – {q75:.2f}%")
+                col4.metric(
+                    "Within ±5%",
+                    f"{int((abs_err <= 5).sum())} / {len(completed)}",
+                )
+                with st.expander("Full error distribution (min / deciles / max)"):
+                    dist = abs_err.describe(
+                        percentiles=[0.1, 0.25, 0.5, 0.75, 0.9]
+                    ).to_frame("Abs error %").round(2)
+                    st.dataframe(dist, width="stretch")
+
+            # Rows that could not be scored, and why. A run excluded by the scale
+            # guard is a data defect, not a forecasting miss, and it belongs in
+            # front of the user rather than silently inflating an average.
+            if "scoring_flag" in runs_df.columns:
+                flagged = runs_df[runs_df["scoring_flag"].notna()].copy()
+                bad_scale = flagged[
+                    flagged["scoring_flag"].astype(str).str.contains("mismatch")
+                ]
+                if not bad_scale.empty:
+                    st.error(
+                        f"**{len(bad_scale)} run(s) excluded from accuracy stats: the "
+                        "data is wrong, not the forecast.** Two checks reject a run. An "
+                        "*entry-price mismatch* means the logged S0 is not what that "
+                        "ticker traded at on the run date, so the run was recorded "
+                        "against a price belonging to a different instrument and its "
+                        "error is meaningless. A *scale mismatch* means the realised "
+                        "move exceeds 8x, which on a liquid instrument is a split, a "
+                        "redenomination, or a data source returning the wrong series. "
+                        "Neither is a forecasting miss, and a single such row moves a "
+                        "mean by orders of magnitude. Clear these before reading any "
+                        "accuracy number."
+                    )
+                    st.dataframe(
+                        bad_scale[[
+                            c for c in ("run_at", "ticker", "asset_class", "model_name",
+                                        "S0", "predicted_p50", "actual_terminal",
+                                        "scoring_flag")
+                            if c in bad_scale.columns
+                        ]],
+                        width="stretch", hide_index=True,
+                    )
+                unscored = flagged[~flagged.index.isin(bad_scale.index)]
+                if not unscored.empty:
+                    with st.expander(f"{len(unscored)} run(s) not yet scored"):
+                        st.dataframe(
+                            unscored[[
+                                c for c in ("run_at", "ticker", "model_name",
+                                            "horizon_days", "scoring_flag")
+                                if c in unscored.columns
+                            ]],
+                            width="stretch", hide_index=True,
+                        )
 
     # ── Backtest (Edge) tab ────────────────────────────────────────────────────
     with tab_backtest:
@@ -932,6 +1053,23 @@ if data_ok:
             )
             m = compute_metrics(bt)
 
+            # Sample-size gate on the whole panel. Every ratio below is estimated
+            # from the trade sample, so at low trade counts they are noise with
+            # two decimal places attached. Say so before the numbers, not after.
+            _n = int(m["n_trades"])
+            if _n < 30:
+                st.error(
+                    f"**{_n} trades. These statistics do not support inference.** "
+                    "Sharpe, profit factor and expectancy are sample estimates whose "
+                    "standard error scales as 1/sqrt(n); at this count the confidence "
+                    "interval on every one of them spans zero, so the result is "
+                    "indistinguishable from a strategy with no edge. A single trade "
+                    "changes the ranking. Treat the panel as a plumbing check that the "
+                    "backtest ran, not as evidence about the strategy. Thirty trades is "
+                    "the minimum for the numbers to carry meaning, and a few hundred "
+                    "across varied market regimes is what a conclusion actually needs."
+                )
+
             k1, k2, k3, k4 = st.columns(4)
             k1.metric(
                 "Total return", f"{m['total_return']*100:.1f}%",
@@ -979,8 +1117,22 @@ if data_ok:
                 "is real and what drawdown to brace for. This is the decision-grade "
                 "Monte Carlo — over your *trades*, not over prices."
             )
-            if len(bt.trades) < 5:
-                st.info("Need ~5+ trades for a meaningful Monte Carlo; this run had fewer.")
+            MIN_TRADES_FOR_MC = 30
+            if len(bt.trades) < MIN_TRADES_FOR_MC:
+                st.warning(
+                    f"**{len(bt.trades)} trades: too few to resample.** This Monte Carlo "
+                    f"needs at least {MIN_TRADES_FOR_MC} and the threshold is not "
+                    "cosmetic. A bootstrap can only redraw from the return distribution "
+                    "it was given, so with a handful of trades it inherits their "
+                    "idiosyncrasies and reports a confident-looking interval built from "
+                    "almost no information. The standard error on mean trade return "
+                    "falls as 1/sqrt(n): at 4 trades it is half the sample standard "
+                    "deviation, wide enough that the sign of the edge is undetermined. "
+                    "Thirty is the conventional floor at which the sampling distribution "
+                    "of the mean is approximately normal and percentile intervals start "
+                    "to mean what they say. Widen the test window, lengthen the history "
+                    "or shorten the rebalance interval to generate more trades."
+                )
             else:
                 mc1, mc2, mc3 = st.columns(3)
                 n_sims = mc1.select_slider(

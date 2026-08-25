@@ -39,7 +39,7 @@ class ModelForecastStrategy(Strategy):
         self,
         model_key: str = "gbm",
         horizon_days: int = 21,
-        lookback_window: int = 252,
+        lookback_window: int = 180,
         rebalance_every: int = 10,
         entry_threshold_pct: float = 2.0,
         use_cone_stops: bool = True,
@@ -142,8 +142,9 @@ class ModelForecastStrategy(Strategy):
                 "Forecast horizon the model projects at each rebalance.",
             ),
             "lookback_window": (
-                252, 60, 504, 10,
-                "Trailing bars the model is refit on (the rolling training window).",
+                180, 60, 504, 10,
+                "Trailing bars the model is refit on (the rolling training window). "
+                "Keep it below your Historical Window's bar count (1y ≈ 251 bars).",
             ),
             "rebalance_every": (
                 10, 1, 30, 1,
