@@ -10,3 +10,8 @@ outputs/forecast_workbench/.streamlit/secrets.toml
 # Jupyter checkpoint copies — editor scratch, regenerated on every save
 .ipynb_checkpoints/
 **/.ipynb_checkpoints/
+
+# Claude Code audit log and its HMAC signing key — local session transcripts,
+# no business being in a public repository
+.audit-key
+audit.jsonl
