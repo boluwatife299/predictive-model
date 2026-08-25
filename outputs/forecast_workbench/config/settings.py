@@ -89,12 +89,10 @@ MODEL_ZOO = {
     # ── Machine Learning ───────────────────────────────────────────────
     "Linear Regression (Baseline)":      "linear_regression",
     "XGBoost":                           "xgboost",
-    "Prophet":                           "prophet",
-    "LSTM Neural Network":               "lstm",
 }
 
 # Models that produce a single deterministic path (use simple line chart)
 SINGLE_PATH_MODELS = {"gbm"}
 
 # Models that need heavy ML libraries (show spinner warning)
-HEAVY_MODELS = {"lstm", "xgboost", "prophet"}
+HEAVY_MODELS = {"xgboost"}

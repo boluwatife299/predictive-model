@@ -123,7 +123,7 @@ $$\hat{P}_{t+1} = \beta_0 + \beta_1 P_t + \beta_2 P_{t-1} + \ldots + \beta_k \ba
 Features: lag₁…lag_k prices, rolling mean, rolling std, time index.
 Recursive multi-step forecast — each prediction feeds the next as a new lag.
 """,
-        "why": "Use this as your benchmark. If LSTM or XGBoost can't beat it, they're overfit. "
+        "why": "Use this as your benchmark. If XGBoost can't beat it, it's overfit. "
                "**Blind spots:** linear only; recursive error accumulates.",
     },
     "xgboost": {
@@ -140,33 +140,5 @@ Features: lagged prices, rolling mean/std, log-returns. Recursive T-step forecas
 """,
         "why": "Strong on non-linearity, interactions and regime-like behaviour. "
                "**Blind spots:** not natively sequential; recursive errors compound.",
-    },
-    "prophet": {
-        "title": "Prophet (Meta / Facebook)",
-        "what": "Decomposes a series into trend + seasonality + holidays — built for data with "
-                "strong calendar cycles.",
-        "how": r"""
-$$y(t) = \text{trend}(t) + \text{seasonality}(t) + \text{holidays}(t) + \varepsilon_t$$
-
-- **Trend**: piecewise linear with automatic changepoint detection.
-- **Seasonality**: Fourier series for weekly and yearly cycles.
-- **changepoint_prior_scale**: higher = more flexible trend.
-""",
-        "why": "Best for assets with strong seasonality (gold, agricultural commodities, BTC cycles). "
-               "**Blind spots:** designed for business metrics, not stochastic price processes.",
-    },
-    "lstm": {
-        "title": "LSTM Neural Network",
-        "what": "A recurrent neural network with memory gates that learns complex non-linear "
-                "temporal patterns from a rolling window of recent prices.",
-        "how": r"""
-$$h_t = \text{LSTM}(x_t, h_{t-1}, c_{t-1})$$
-
-Gates control memory: **forget** (discard history), **input** (add new info),
-**output** (produce hidden state). Architecture: Input(lookback,1) → LSTM(units)
-→ Dropout(0.1) → Dense(1), with MinMax scaling.
-""",
-        "why": "Best for assets with complex non-linear temporal structure and plenty of data. "
-               "**Blind spots:** data-hungry, slow to train, black-box.",
     },
 }

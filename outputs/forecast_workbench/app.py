@@ -33,7 +33,7 @@ from config.settings import (
 )
 from data.fetcher import DataFetcher
 from data.preprocessor import Preprocessor
-from models import REGISTRY, UNAVAILABLE
+from models import REGISTRY
 from strategy import MODEL_DRIVEN, STRATEGY_REGISTRY
 from backtest import compute_metrics, metrics_table, run_backtest, trade_sequence_mc
 from validation.ledger import ValidationLedger
@@ -129,20 +129,8 @@ with st.sidebar:
 
     st.divider()
 
-    # Model selection — exclude models whose deps aren't installed
-    available_model_labels = [
-        label for label, key in MODEL_ZOO.items()
-        if key not in UNAVAILABLE
-    ]
-    if UNAVAILABLE:
-        unavailable_names = ", ".join(
-            label for label, key in MODEL_ZOO.items() if key in UNAVAILABLE
-        )
-        st.caption(
-            f"ℹ️ Not available in this environment (heavy deps): {unavailable_names}. "
-            "Install locally with `pip install prophet tensorflow-cpu`."
-        )
-    model_label = st.selectbox("Model", available_model_labels)
+    # Model selection
+    model_label = st.selectbox("Model", list(MODEL_ZOO.keys()))
     model_key = MODEL_ZOO[model_label]
     ModelClass = REGISTRY[model_key]
 
@@ -386,17 +374,16 @@ if data_ok:
                 "parameters) and compare today's forward forecast side by side. "
                 "Big disagreement between models = high genuine uncertainty."
             )
-            compare_labels = [lbl for lbl, k in MODEL_ZOO.items() if k not in UNAVAILABLE]
+            compare_labels = list(MODEL_ZOO.keys())
             default_compare = [
                 lbl for lbl, k in MODEL_ZOO.items()
                 if k in {"gbm", "monte_carlo", "ou", "jump_diffusion", "garch"}
-                and k not in UNAVAILABLE
             ]
             chosen_compare = st.multiselect(
                 "Models to compare",
                 compare_labels,
                 default=default_compare,
-                help="Heavy ML models (XGBoost/LSTM/Prophet) are slower — add them only if you want to wait.",
+                help="XGBoost is slower than the closed-form models: add it only if you want to wait.",
             )
             cmp_key = (ticker, asset_class,
                        tuple(sorted(MODEL_ZOO[l] for l in chosen_compare)))

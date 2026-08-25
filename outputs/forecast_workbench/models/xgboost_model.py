@@ -3,7 +3,6 @@ XGBoost — Gradient Boosted Decision Trees.
 
 Surprisingly competitive against deep learning for tabular/time-series data.
 Captures non-linear relationships between lagged prices and future prices.
-Often beats LSTM on shorter financial series.
 
 How it works:
     1. Create lag features: price_{t-1}, ..., price_{t-lookback},

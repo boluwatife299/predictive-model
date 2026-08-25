@@ -2,7 +2,7 @@
 Linear Regression (OLS Baseline).
 
 The simplest possible ML model — and your benchmark.
-If your complex models (LSTM, XGBoost, GARCH) can't beat this,
+If your complex models (XGBoost, GARCH) can't beat this,
 they're overfitting or misconfigured.
 
 Features used:
