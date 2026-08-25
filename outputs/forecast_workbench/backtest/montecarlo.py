@@ -21,6 +21,20 @@ from dataclasses import dataclass, field
 import numpy as np
 
 
+# Minimum realised trades before resampling produces anything meaningful.
+#
+# A bootstrap redraws from the empirical distribution it is handed; it cannot
+# manufacture information that is not in the sample. Below this count the
+# resampled percentiles are an artefact of a few trades rather than evidence
+# about the strategy, and they arrive dressed as a precise interval, which is
+# worse than reporting nothing. The standard error of the mean trade return
+# scales as s/sqrt(n): at n = 4 it is half the sample standard deviation, so
+# the edge cannot be distinguished from zero at any useful confidence. Thirty
+# is the conventional point at which the sampling distribution of the mean is
+# approximately normal and percentile intervals become interpretable.
+MIN_TRADES = 30
+
+
 @dataclass
 class MonteCarloResult:
     final_returns: np.ndarray        # terminal return of each simulated run
@@ -55,7 +69,7 @@ def trade_sequence_mc(
     mode          : 'bootstrap' (resample with replacement) or 'shuffle' (reorder).
     """
     tr = np.asarray(trade_returns, dtype=float)
-    if tr.size < 2:
+    if tr.size < MIN_TRADES:
         return None
 
     rng = np.random.default_rng(seed)

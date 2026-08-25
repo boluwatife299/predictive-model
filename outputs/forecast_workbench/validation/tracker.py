@@ -16,6 +16,7 @@ import math
 from datetime import datetime, timezone
 from typing import Any
 
+import numpy as np
 import pandas as pd
 from sqlalchemy import insert, select
 
@@ -114,6 +115,89 @@ def enrich_with_actuals(
     """
     if df.empty:
         return df
+
+    df = df.copy()
+    df["actual_terminal"] = None
+    df["error_pct"] = None
+    df["scoring_flag"] = None
+
+    for idx, row in df.iterrows():
+        series = price_map.get(row["ticker"])
+        if series is None or series.empty:
+            df.at[idx, "scoring_flag"] = "no price history"
+            continue
+
+        run_date = pd.Timestamp(row["run_at"]).tz_localize(None)
+
+        # ``horizon_days`` is TRADING days: the models step at dt = 1/252 and lay
+        # their dates out on a bdate_range. Advancing the calendar by the same
+        # number of days therefore lands ~30% short (30 trading days is about 42
+        # calendar days), and every run was being scored against a price from too
+        # early in the path. Offset in business days to match how it was forecast.
+        horizon = int(row["horizon_days"])
+        target_date = pd.Timestamp(
+            np.busday_offset(run_date.date(), horizon, roll="forward")
+        )
+
+        future_prices = series[series.index >= target_date]
+        if future_prices.empty:
+            df.at[idx, "scoring_flag"] = "horizon not yet elapsed"
+            continue
+
+        actual = float(future_prices.iloc[0])
+        predicted = float(row["predicted_p50"])
+
+        if not np.isfinite(actual) or not np.isfinite(predicted):
+            df.at[idx, "scoring_flag"] = "non-finite value"
+            continue
+        if actual <= 0:
+            df.at[idx, "scoring_flag"] = "non-positive actual"
+            continue
+
+        # Entry-price integrity check.
+        #
+        # A ratio band on predicted/actual is the wrong test: the failure that
+        # actually occurs here is a run logged against a stale entry price from a
+        # previously selected instrument, and a $310 forecast on an $85 instrument
+        # is only a 3.6x discrepancy, well inside any band loose enough to permit a
+        # genuinely volatile asset. The precise invariant is different and cheap to
+        # check: S0 was, by definition, the instrument's own price at the moment the
+        # run was logged. If the logged S0 does not match that instrument's close on
+        # the run date, the run does not belong to the instrument it is filed under
+        # and its error is meaningless regardless of magnitude.
+        #
+        # The tolerance is generous because S0 may be an intraday or pre-market quote
+        # against a daily close, and crypto runs are logged around the clock. It is
+        # nowhere near loose enough to admit a different instrument.
+        S0 = float(row["S0"]) if "S0" in row and row["S0"] is not None else float("nan")
+        at_run = series[series.index <= run_date]
+        if np.isfinite(S0) and S0 > 0 and not at_run.empty:
+            ref = float(at_run.iloc[-1])
+            drift = abs(S0 / ref - 1.0) if ref > 0 else float("inf")
+            if drift > 0.25:
+                df.at[idx, "actual_terminal"] = round(actual, 4)
+                df.at[idx, "scoring_flag"] = (
+                    f"entry-price mismatch: logged S0 {S0:,.2f} vs {row['ticker']} "
+                    f"close {ref:,.2f} on {run_date.date()} ({drift*100:,.0f}% apart)"
+                )
+                continue
+
+        # Residual scale guard for everything the entry check cannot see, such as a
+        # split or redenomination inside the horizon: a realised move beyond 8x is a
+        # corporate action or a bad series, not a forecast error, and one such row
+        # moves a mean by orders of magnitude while the median does not notice.
+        ratio = predicted / actual
+        if not (0.125 <= ratio <= 8.0):
+            df.at[idx, "actual_terminal"] = round(actual, 4)
+            df.at[idx, "scoring_flag"] = (
+                f"scale mismatch: predicted/actual = {ratio:,.1f}x"
+            )
+            continue
+
+        df.at[idx, "actual_terminal"] = round(actual, 4)
+        df.at[idx, "error_pct"] = round((predicted - actual) / actual * 100, 2)
+
+    return df
 
     df = df.copy()
     df["actual_terminal"] = None
