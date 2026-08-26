@@ -920,18 +920,12 @@ if data_ok:
                     flagged["scoring_flag"].astype(str).str.contains("mismatch")
                 ]
                 if not bad_scale.empty:
-                    st.error(
-                        f"**{len(bad_scale)} run(s) excluded from accuracy stats: the "
-                        "data is wrong, not the forecast.** Two checks reject a run. An "
-                        "*entry-price mismatch* means the logged S0 is not what that "
-                        "ticker traded at on the run date, so the run was recorded "
-                        "against a price belonging to a different instrument and its "
-                        "error is meaningless. A *scale mismatch* means the realised "
-                        "move exceeds 8x, which on a liquid instrument is a split, a "
-                        "redenomination, or a data source returning the wrong series. "
-                        "Neither is a forecasting miss, and a single such row moves a "
-                        "mean by orders of magnitude. Clear these before reading any "
-                        "accuracy number."
+                    # The per-row ``scoring_flag`` below states why each run was
+                    # rejected, so the exclusion stays visible without a standing
+                    # block of explanatory text above the table.
+                    st.caption(
+                        f"{len(bad_scale)} run(s) excluded from the stats above "
+                        "(see scoring_flag for the reason):"
                     )
                     st.dataframe(
                         bad_scale[[
